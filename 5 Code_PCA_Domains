@@ -1,0 +1,364 @@
+## 5. PCA for 16 Domains
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from sklearn.decomposition import PCA
+from sklearn.preprocessing import StandardScaler
+
+# Parallel Analysis Function
+def parallel_analysis(X, n_iter=500, percentile=95):
+
+    n, p = X.shape
+
+    # Real eigenvalues
+    pca = PCA()
+    pca.fit(X)
+    real_eig = pca.explained_variance_
+
+    # Storage for random eigenvalues
+    rand_eigs = np.zeros((n_iter, p))
+
+    for i in range(n_iter):
+        X_random = np.random.normal(size=(n, p))
+        pca_random = PCA()
+        pca_random.fit(X_random)
+        rand_eigs[i, :] = pca_random.explained_variance_
+
+    rand_mean = rand_eigs.mean(axis=0)
+    rand_percentile = np.percentile(rand_eigs, percentile, axis=0)
+
+    # Number of components to retain
+    n_components = np.sum(real_eig > rand_percentile)
+
+    return real_eig, rand_mean, rand_percentile, n_components
+
+# MAIN PCA FUNCTION WITH PARALLEL ANALYSIS
+def run_pca(df, variable_list, prefix="PC", variance_threshold=0.70, standardize=True):
+
+    X = df[variable_list].copy()
+
+    # Standardize
+    if standardize:
+        X_scaled = StandardScaler().fit_transform(X)
+    else:
+        X_scaled = X.values
+
+    # PCA
+    pca = PCA()
+    X_pca = pca.fit_transform(X_scaled)
+
+    explained = pca.explained_variance_ratio_
+    cum_explained = explained.cumsum()
+
+    print(f"\n===== PCA for {prefix} =====")
+    print("----- Variance Explained -----")
+    for i, (ev, cv) in enumerate(zip(explained, cum_explained), start=1):
+        print(f"{prefix}{i}: explained = {ev:.3f}, cumulative = {cv:.3f}")
+
+    k_var = np.argmax(cum_explained >= variance_threshold) + 1
+    print(f"\n>>> Variance-threshold recommended components: {k_var}")
+
+    k = k_var
+
+    # Scree Plot
+    plt.figure(figsize=(8, 8))
+    num_components = len(explained)
+
+    plt.bar(range(1, num_components + 1), explained, alpha=0.7,
+            label="Individual Explained Variance")
+
+    plt.plot(range(1, num_components + 1), cum_explained, marker='o',
+             color='red', label="Cumulative Explained Variance")
+
+    plt.axhline(y=variance_threshold, color='green', linestyle='--',
+                label=f"{variance_threshold*100:.0f}% Threshold")
+
+    plt.title(f"Scree Plot for {prefix}")
+    plt.xlabel("Principal Component")
+    plt.ylabel("Explained Variance Ratio")
+    plt.xticks(range(1, num_components + 1))
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+    
+    # Parallel Analysis
+    print("\n===== Parallel Analysis =====")
+
+    real_eig, rand_mean, rand_p95, pa_k = parallel_analysis(X_scaled, n_iter=300)
+
+    print("\nReal eigenvalues:", np.round(real_eig, 4))
+    print("Random mean eigenvalues:", np.round(rand_mean, 4))
+    print("Random 95th percentile eigenvalues:", np.round(rand_p95, 4))
+    print(f"\n>>> Recommended components (Parallel Analysis): {pa_k}\n")
+
+    plt.figure(figsize=(8, 6))
+    plt.plot(real_eig, marker='o', label='Real Eigenvalues')
+    plt.plot(rand_mean, marker='x', label='Random Mean Eigenvalues')
+    plt.plot(rand_p95, marker='s', label='Random 95th Percentile')
+    plt.title(f"Parallel Analysis for {prefix}")
+    plt.xlabel("Component")
+    plt.ylabel("Eigenvalue")
+    plt.legend()
+    plt.grid(True)
+    plt.tight_layout()
+    plt.show()
+
+    # we choose Parallel Analysis outcome as the final choice
+    k = pa_k
+    print(f"*** Final number of components used: {k} ***\n")
+
+    # Loadings
+    loadings = pd.DataFrame(
+        pca.components_.T[:, :k],
+        index=variable_list,
+        columns=[f"{prefix}_PPCA{i+1}" for i in range(k)]
+    )
+
+    print("----- PCA Loadings (Using PA FINAL choice) -----")
+    print(loadings)
+    
+    # Create PCA Interpretation Table
+    meaning_table = []
+
+    for col in loadings.columns:
+        # Top positive loadings
+        top_pos = loadings[col].sort_values(ascending=False).head(5).index.tolist()
+        # Top negative loadings
+        top_neg = loadings[col].sort_values(ascending=True).head(5).index.tolist()
+
+        meaning_table.append({
+            "Component": col,
+            "Top Positive Variables": ", ".join(top_pos),
+            "Top Negative Variables": ", ".join(top_neg),
+            "Meaning": ""   # we will fill out this mannully
+        })
+
+    meaning_df = pd.DataFrame(meaning_table)
+    
+    print("\n===== PCA Interpretation Table =====")
+    print(meaning_df)
+    
+    # Add PC scores
+    pc_scores = pd.DataFrame(
+        X_pca[:, :k],
+        index=df.index,
+        columns=[f"{prefix}_PPCA{i+1}" for i in range(k)]
+    )
+
+    df[pc_scores.columns] = pc_scores
+    
+    # Determine PCA Component Direction
+
+    direction_info = []
+
+    for col in loadings.columns:
+
+        # PC scores for this component
+        scores = df[col]
+        median_val = scores.median()
+
+        # Top positive and negative loadings with values
+        pos_vars = loadings[col].sort_values(ascending=False).head(5)
+        neg_vars = loadings[col].sort_values(ascending=True).head(5)
+
+        pos_str = ", ".join([f"{var}({val:+.3f})" for var, val in pos_vars.items()])
+        neg_str = ", ".join([f"{var}({val:+.3f})" for var, val in neg_vars.items()])
+
+        direction_info.append({
+            "Component": col,
+            "Median Score": median_val,
+            "Top Positive Loadings": pos_str,
+            "Top Negative Loadings": neg_str,
+            "Suggested Interpretation": "" # we will fill out this mannully
+        })
+
+    direction_df = pd.DataFrame(direction_info)
+
+    print("\n===== PCA Direction Diagnostics =====")
+    print(direction_df)
+
+    print("\nAdded:", list(pc_scores.columns))
+
+    return pca, loadings, pa_k, meaning_df, direction_df
+
+domains = {
+
+    "Education": [
+        "ACS_PCT_LT_HS","ACS_PCT_HS_GRADUATE","ACS_PCT_POSTHS_ED",
+        "CRDC_SERVICE_RAT_STUD","CRDC_SAFTY_RAT_STUD",
+        "CRDC_PCT_APEXAM_ONEORMORE","CRDC_PCT_CTY_KGTN",
+        "CRDC_PCT_HBA","CRDC_SCH_AVG_STUD","CCD_TOT_EXPENDITURE"
+    ],
+
+    "Immigration_Language": ["ACS_PCT_FOREIGN_BORN", "ACS_PCT_ENGL_NOT_WELL"],
+
+    "Income_Poverty": [
+        "ACS_GINI_INDEX","ACS_MEDIAN_HH_INC","ACS_MEDIAN_INC_F",
+        "ACS_MEDIAN_INC_M","ACS_PCT_HH_INC_low","ACS_PCT_HH_INC_median",
+        "ACS_PCT_HH_INC_high","ACS_Poverty_Severity_BELOW17",
+        "ACS_PER_CAPITA_INC","ACS_PCT_HH_FOOD_STMP","ACS_Poverty_Severity",
+        "ACS_PCT_HH_FOOD_STMP_BLW_POV","CHR_PCT_FOOD"
+    ],
+
+    "Employment": [
+        "ACS_PCT_Primary","ACS_PCT_Secondary","ACS_PCT_Thirdary",
+        "ACS_PCT_WORK_RES_Gender_Diff","AHRF_UNEMPLOYED_RATE"
+    ],
+
+    "Demographics": [
+        "ACS_PCT_AGE_0_17","ACS_PCT_AGE_18_64","ACS_PCT_AGE_ABOVE65",
+        "ACS_PCT_AIAN","ACS_PCT_ASIAN","ACS_PCT_BLACK",
+        "ACS_PCT_MULT_RACE","ACS_PCT_NHPI","ACS_PCT_WHITE",
+        "ACS_PCT_OTHER_RACE","ACS_PCT_FEMALE","ACS_PCT_HISPANIC",
+        "ACS_PCT_NVR_MARRIED","ACS_PCT_VET","ACS_PCT_DISABLE",
+        "CHR_SEGREG_NON_WHITE","ACS_PCT_Migration"
+    ],
+
+    "FAMILY_HARDSHIP": [
+        "ACS_AVG_HH_SIZE","ACS_PCT_CHILD_1FAM",
+        "ACS_PCT_GRANDP_RESPS","ACS_PCT_HH_ALONE_ABOVE65"
+    ],
+
+    "HOUSING": [
+        "ACS_PCT_HU_CLEAN_FUEL","ACS_PCT_HU_BAD",
+        "ACS_PCT_1UP_PERS_1ROOM","ACS_PCT_HU_COST_30PCT"
+    ],
+
+    "TRANSPORT": ["ACS_PCT_HU_NO_VEH","ACS_PCT_COMMT_60MINUP","ACS_PCT_PUBL_TRANSIT"],
+
+    "HEALTHCARE_SHORTAGE": ["HRSA_MUA_COUNTY","AHRF_HPSA_DENTIST","AHRF_HPSA_MENTAL","AHRF_HPSA_PRIM"],
+    
+    "HEALTHCARE_STRUCTURAL_PROVIDER": ["AHRF_CARDIAC_IC_BEDS_RATE","AHRF_HOSPS_RATE","AHRF_HOSP_BEDS_LT_RATE",
+        "AHRF_HOSP_BED_RATE","AHRF_LT_HOSP_RATE","AHRF_MEDSURGIC_BEDS_RATE","AHRF_MEDSURGIC_HOSP_RATE",
+        "AHRF_NEONATALIC_BEDS_RATE","AHRF_NEONATALIC_HOSP_RATE","AHRF_OPRT_ROOM_RATE",
+        "AHRF_RURL_REFRRL_CNT_RATE","AHRF_ST_COMM_HOSP_RATE","AHRF_ST_G_HOSP_BED_RATE","AHRF_ST_G_HOSP_RATE",
+        "AHRF_ST_N_G_HOSP_RATE","POS_HOSP_AMBULANCE_RATE","POS_HOSP_BURN_RATE","POS_HOSP_CHEMO_RATE",
+        "POS_HOSP_ED_RATE","POS_HOSP_OBSTETRIC_RATE","POS_HOSP_PED_ICU_RATE","AHRF_COM_HEALTH_GRANT_RATE","AHRF_NHSC_ACTIVE_RATE","AHRF_NHSC_FTE_PROV_RATE",
+         "POS_ASC_RATE","POS_FQHC_RATE","POS_RHC_RATE","AMFAR_HCVTFAC_RATE","AMFAR_HIVTFAC_RATE","AMFAR_RWFAC_RATE",
+                              "POS_CMHC_RATE","POS_HOSP_ALC_RATE","POS_HOSP_PSYCH_RATE","LTC_TOT_BEDS_RATE","POS_HHA_RATE","POS_HOSPICE_RATE",
+                                    "POS_NF_BEDS_RATE","POS_NF_RATE","POS_SNF_BEDS_RATE","POS_SNF_RATE","AHRF_HOSP_MOBILE_RATE","AHRF_HOSP_TELE_ICU_RATE",
+                                    "AHRF_HOSP_TELE_STROKE_RATE","POS_HOSP_MEDSURG_ICU_RATE","POS_HOSP_REHAB_RATE"],
+    
+    "HEALTHCARE_PROVIDER_SPECIALTY":[
+        "AHRF_ADV_NURSES_RATE","AHRF_ALLERGY_IMM_RATE","AHRF_ANESTH_RATE","AHRF_CARDIOVAS_SPEC_RATE",
+        "AHRF_CLIN_NURSE_SPEC_RATE","AHRF_COLON_SRG_RATE","AHRF_DENTISTS_RATE","AHRF_DERMATOLOGY_RATE",
+        "AHRF_ER_MED_RATE","AHRF_GASTROENTEROLOGY_RATE","AHRF_GENRL_SURG_RATE","AHRF_GEN_INTERNAL_MED_RATE",
+        "AHRF_GEN_PREV_RATE","AHRF_MED_SPEC_RATE","AHRF_NEUROLOGICAL_SURG_RATE","AHRF_NURSE_ANESTH_RATE",
+        "AHRF_NURSE_MIDWIVES_RATE","AHRF_OB_GYN_RATE","AHRF_OPHTHALMOLOGY_RATE","AHRF_ORTH_SURG_RATE",
+        "AHRF_OTHER_SPEC_RATE","AHRF_OTOLARYNGOLOGY_RATE","AHRF_PEDIATRICS_RATE","AHRF_PLASTIC_SURG_RATE",
+        "AHRF_PULMONARY_SPEC_RATE","AHRF_RADI_RATE","AHRF_SURG_SPECS_RATE","AHRF_THORACIC_SURG_RATE",
+        "AHRF_UROL_RATE"
+    ],
+    
+    "HEALTHCARE_DISTANCE_METRIC":[
+        "AMFAR_AVG_DISTSSP","POS_MEAN_DIST_ALC","POS_MEAN_DIST_CLINIC",
+        "POS_MEAN_DIST_ED","POS_MEAN_DIST_MEDSURG_ICU","POS_MEAN_DIST_OBSTETRICS",
+        "POS_MEAN_DIST_PED_ICU","POS_MEAN_DIST_TRAUMA"
+    ],
+
+    "HEALTHCARE_INSURANCE": [
+        "ACS_PCT_MEDICAID_ANY","ACS_PCT_MEDICARE_ONLY","ACS_PCT_OTHER_INS",
+        "ACS_PCT_PRIVATE_SELF","ACS_PCT_PRIVATE_EMPL","ACS_PCT_PRIVATE_MDCR",
+        "ACS_PCT_TRICARE_VA","ACS_PCT_UNINSURED","AHRF_PCT_PRESC_PEN",
+        "MGV_PCT_MEDICAID","MP_PCT_ADVTG_PEN","PC_PCT_MEDICARE_APPRVD_FULL_AMT"
+    ],
+
+    "HEALTHCARE_UTIL_COST": [
+        "AHRF_PREV_HOSP_RATE","MGV_PER_CAPITA_STD_EM","MGV_PER_CAPITA_STD_HC",
+        "MGV_PER_CAPITA_STD_IP","MGV_PER_CAPITA_STD_OP","MGV_PER_CAPITA_STD_PA",
+        "AHRF_IP_DAY_NH_HOSP_RATE"
+    ],
+
+    "LTC_QUALITY": [
+        "LTC_AVG_OBS_MEDIAN_LOS","LTC_AVG_OBS_REHOSP_RATE",
+        "LTC_AVG_OBS_SUCCESSFUL_DISC_RATE","LTC_AVG_PCT_MEDICAID",
+        "LTC_AVG_PCT_MEDICARE","LTC_OCCUPANCY_RATE",
+        "LTC_AVG_AGE","LTC_AVG_PCT_PRESSURE_ULCER"
+    ],
+
+    "HEALTH_BEH_EXAM": [
+        "CDCP_CERVCAN_SCR_F21_65_A","CDCP_DENTIST_VISIT_ADULT_A",
+        "CDCP_DOCTOR_VISIT_ADULT_A","CDCP_FOBT_SIG_COL_50_75_A",
+        "CDCP_MAMMO_SCR_F50_74_A","CDCP_PREV_SERV_F65_ABOVE_A",
+        "CDCP_PREV_SERV_M65_ABOVE_A"
+    ],
+
+    "HEALTH_BEH_BAD": [
+        "CDCP_NO_PHY_ACTV_ADULT_A","CHR_PCT_EXCESS_DRINK",
+        "CHR_PCT_SMOKING","CDCP_SLEEP_LESS7HR_ADULT_A",
+        "CCBP_BWLSTORES_RATE","CCBP_GAMBLING_RATE"
+    ],
+
+    "HealthOutcomes": [
+        "CHR_AVG_LIFE_EXPEC","CHR_PREMAT_DEATH_RATE","CHR_PCT_POOR_HEALTH",
+        "CHR_PCT_MENTAL_DISTRESS","CHR_PCT_PHYSICAL_DISTRESS"
+    ],
+
+    "Chronic": [
+        "CDC_USCS_AGE_ADJ_MORT_RATE","CDCA_HEART_DTH_RATE_ABOVE35",
+        "CDCA_STROKE_DTH_RATE_ABOVE35","CDCP_PULMONARY_ADULT_A",
+        "CDCW_SELFHARM_DTH_RATE","PCT_ADULT_OBESITY"
+    ],
+
+    "Infectious": [
+        "CDCAP_CHLAMYDIA_RATE","CDCAP_GONORRHEA_RATE",
+        "CDCAP_HIVDIAG_RATE_ABOVE13","CDCAP_SYPHILIS_RATE"
+    ],
+
+    "Environment": [
+        "WUSTL_AVG_PM25","NOAAS_TOT_DISASTER",
+        "NOAAC_TEMP_WINTER","NOAAC_TEMP_SPRING","NOAAC_TEMP_SUMMER",
+        "NOAAC_TEMP_FALL","NOAAC_PRECIP_WINTER","NOAAC_PRECIP_SPRING",
+        "NOAAC_PRECIP_SUMMER","NOAAC_PRECIP_FALL",
+        "NEPHTN_PCT_ARSENIC_MCL_LESS10","AHRF_DAYS_AIR_QLT"
+    ],
+
+    "Geography": [
+        "CEN_AREALAND_SQM_COUNTY","CEN_POPDENSITY_COUNTY","NCHS_URCS_2013"
+    ]
+}
+
+import pandas as pd
+import numpy as np
+from sklearn.decomposition import PCA
+from sklearn.preprocessing import StandardScaler
+
+df = pd.read_excel("Pre_Processing_Variables.xlsx", dtype={"FIPS": str}, index_col="FIPS")
+
+meaning_tables = {}   
+direction_tables = {}  
+
+for prefix, var_list in domains.items():
+    print("\nRunning PCA for:", prefix)
+    pca, loadings, pa_k, meaning_df, direction_df = run_pca(df, var_list, prefix=prefix)
+
+    meaning_tables[prefix] = meaning_df
+    direction_tables[prefix] = direction_df
+
+final_df = pd.DataFrame(index=df.index)
+
+final_df["Healthcare_HHI"] = df["AHA_HHI_SHRTTRM_ACUTE"]
+final_df["Healthcare_HHA"] = df["HHC_PCT_HHA"]
+final_df["Healthcare_MENTAL_HEALTH"] = df["MENTAL_HEALTH_WORKFORCE"]
+final_df["Healthcare_PRIMARY_CARE"] = df["PRIMARY_CARE_PROVIDER"]
+final_df["MaternalChild"] = df[['CHR_TEEN_BIRTH_RATE_15_19','CHR_PCT_LOW_BIRTH_WT']].mean(axis=1)
+final_df["Healthcare_NURSE_STAFF"] = (
+    df["NHC_AVG_ADJ_NURSE_STAFF"] + df["NHC_AVG_LIC_STAFF"]
+) / 2
+
+for col in df.columns:
+    if "_PPCA" in col:      # any PCA variable
+        final_df[col] = df[col]
+
+len(final_df.columns)
+
+with pd.ExcelWriter("PCA_Interpretation_Tables.xlsx") as writer:
+    for prefix, table in meaning_tables.items():
+        sheet_name = f"{prefix}_Meaning"[:31]
+        table.to_excel(writer, sheet_name=sheet_name)
+
+    for prefix, table in direction_tables.items():
+        sheet_name = f"{prefix}_Direction"[:31]
+        table.to_excel(writer, sheet_name=sheet_name)
+
+final_df.to_excel("Final_Variables.xlsx", index=True)
